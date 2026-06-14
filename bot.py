@@ -192,7 +192,7 @@ async def call_gemini(system: str, user_text: str, history=None,
         contents.append(types.Content(role="user", parts=[types.Part(text=full_prompt)]))
 
     resp = client.models.generate_content(
-        model="gemini-1.5-pro",
+        model="gemini-2.0-flash",
         contents=contents,
         config=types.GenerateContentConfig(max_output_tokens=1500, temperature=0.7)
     )
@@ -238,7 +238,7 @@ async def maybe_update_profile(message: str) -> bool:
     client = get_client()
     prompt = PROMPT_MEMORY.format(message=message, profile=profile)
     resp = client.models.generate_content(
-        model="gemini-1.5-flash",
+        model="gemini-2.0-flash",
         contents=prompt,
         config=types.GenerateContentConfig(max_output_tokens=500, temperature=0.3)
     )
