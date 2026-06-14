@@ -8,7 +8,8 @@ from telegram.ext import (
     Application, CommandHandler, MessageHandler,
     filters, ContextTypes, ConversationHandler
 )
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from database import Database
 
 logging.basicConfig(level=logging.INFO)
@@ -55,19 +56,8 @@ def save_profile(content: str):
     with open(PROFILE_FILE, "w", encoding="utf-8") as f:
         f.write(content)
 
-def get_model():
-    genai.configure(api_key=os.environ["GEMINI_API_KEY"])
-    return genai.GenerativeModel(
-        model_name="gemini-1.5-pro",
-        generation_config={"max_output_tokens": 1500, "temperature": 0.7}
-    )
-
-def get_fast_model():
-    genai.configure(api_key=os.environ["GEMINI_API_KEY"])
-    return genai.GenerativeModel(
-        model_name="gemini-1.5-flash",
-        generation_config={"max_output_tokens": 500, "temperature": 0.3}
-    )
+def get_client():
+    return genai.Client(api_key=os.environ["GEMINI_API_KEY"])
 
 def build_system(profile: str, extra_context: str = "") -> str:
     return f"""Ты персональный тренер и нутрициолог. Общаешься в Telegram.
@@ -183,28 +173,29 @@ def build_workout_context(db, user_id):
 
 async def call_gemini(system: str, user_text: str, history=None,
                       image_data=None, image_mime=None) -> str:
-    model = get_model()
+    client = get_client()
     full_prompt = f"{system}\n\n---\n\n{user_text}"
 
     contents = []
     if history:
         for h in history[-10:]:
             role = "user" if h["role"] == "user" else "model"
-            contents.append({"role": role, "parts": [h["content"]]})
+            contents.append(types.Content(role=role, parts=[types.Part(text=h["content"])]))
 
     if image_data and image_mime:
         image_bytes = base64.b64decode(image_data)
-        contents.append({
-            "role": "user",
-            "parts": [
-                {"mime_type": image_mime, "data": image_bytes},
-                full_prompt
-            ]
-        })
+        contents.append(types.Content(role="user", parts=[
+            types.Part(inline_data=types.Blob(mime_type=image_mime, data=image_bytes)),
+            types.Part(text=full_prompt)
+        ]))
     else:
-        contents.append({"role": "user", "parts": [full_prompt]})
+        contents.append(types.Content(role="user", parts=[types.Part(text=full_prompt)]))
 
-    resp = model.generate_content(contents)
+    resp = client.models.generate_content(
+        model="gemini-1.5-pro",
+        contents=contents,
+        config=types.GenerateContentConfig(max_output_tokens=1500, temperature=0.7)
+    )
     return resp.text
 
 def extract_and_apply_profile_update(reply: str) -> tuple[str, bool]:
@@ -244,9 +235,13 @@ async def maybe_update_profile(message: str) -> bool:
         return False
 
     profile = load_profile()
-    model = get_fast_model()
+    client = get_client()
     prompt = PROMPT_MEMORY.format(message=message, profile=profile)
-    resp = model.generate_content(prompt)
+    resp = client.models.generate_content(
+        model="gemini-1.5-flash",
+        contents=prompt,
+        config=types.GenerateContentConfig(max_output_tokens=500, temperature=0.3)
+    )
     result = resp.text.strip()
 
     if "NO_UPDATE" in result or "<UPDATE_PROFILE>" not in result:
