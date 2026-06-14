@@ -17,7 +17,7 @@ pathlib.Path("/app/data").mkdir(exist_ok=True)
 logger = logging.getLogger(__name__)
 
 MAIN_MENU, WORKOUT_ACTIVE, CHAT = range(3)
-PROFILE_FILE = "/app/data/athlete_profile.md"
+
 
 DEFAULT_PROFILE = """# Профиль атлета
 
@@ -46,16 +46,15 @@ DEFAULT_PROFILE = """# Профиль атлета
 (не указаны)
 """
 
-def load_profile() -> str:
-    if not os.path.exists(PROFILE_FILE):
-        with open(PROFILE_FILE, "w", encoding="utf-8") as f:
-            f.write(DEFAULT_PROFILE)
-    with open(PROFILE_FILE, "r", encoding="utf-8") as f:
-        return f.read()
+def load_profile(db, user_id: int) -> str:
+    profile = db.get_profile(user_id)
+    if not profile:
+        profile = DEFAULT_PROFILE
+        db.save_profile(user_id, profile)
+    return profile
 
-def save_profile(content: str):
-    with open(PROFILE_FILE, "w", encoding="utf-8") as f:
-        f.write(content)
+def save_profile(db, user_id: int, content: str):
+    db.save_profile(user_id, content)
 
 def get_client():
     return Groq(api_key=os.environ["GROQ_API_KEY"])
@@ -252,7 +251,7 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     u = update.effective_user
     db.ensure_user(u.id, u.first_name)
     ctx.user_data.clear()
-    load_profile()
+    load_profile(db, u.id)
 
     await update.message.reply_text(
         f"Привет, {u.first_name}! 💪\n\n"
@@ -513,7 +512,7 @@ async def finish_workout(update, ctx, db, user_id):
 
 def main():
     token = os.environ["TELEGRAM_TOKEN"]
-    db = Database()
+    db = Database("/app/data/fitness.db")
 
     app = Application.builder().token(token).build()
     app.bot_data["db"] = db
