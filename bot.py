@@ -334,7 +334,7 @@ async def handle_workout(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "sets_remaining": 3,
         }
         workout["chat_history"].append({"role": "assistant", "content": clean_reply})
-        await update.message.reply_text(clean_reply, parse_mode="Markdown", reply_markup=workout_kb())
+        await update.message.reply_text(clean_reply, reply_markup=workout_kb())
         return WORKOUT_ACTIVE
 
     set_match = re.search(r'(\d+[\.,]?\d*)\s*[xXхХ×]\s*(\d+)', text)
@@ -373,7 +373,7 @@ async def handle_workout(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             {"role": "user", "content": text},
             {"role": "assistant", "content": clean_reply}
         ]
-        await update.message.reply_text(clean_reply, parse_mode="Markdown", reply_markup=workout_kb())
+        await update.message.reply_text(clean_reply, reply_markup=workout_kb())
         return WORKOUT_ACTIVE
 
     # Свободный текст во время тренировки
@@ -389,7 +389,7 @@ async def handle_workout(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         {"role": "assistant", "content": clean_reply}
     ]
     suffix = "\n\n_📝 Обновил твой профиль_" if updated else ""
-    await update.message.reply_text(clean_reply + suffix, parse_mode="Markdown", reply_markup=workout_kb())
+    await update.message.reply_text(clean_reply + suffix, reply_markup=workout_kb())
     return WORKOUT_ACTIVE
 
 async def handle_chat(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -419,7 +419,7 @@ async def handle_chat(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ]
 
     suffix = "\n\n_📝 Обновил твой профиль_" if updated else ""
-    await update.message.reply_text(clean_reply + suffix, parse_mode="Markdown", reply_markup=chat_kb())
+    await update.message.reply_text(clean_reply + suffix, reply_markup=chat_kb())
     return CHAT
 
 async def show_profile(update: Update):
@@ -458,7 +458,7 @@ async def show_progress(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             arrow = f" _(+{diff}кг)_" if diff > 0 else ""
             text += f"  {ex}: {last['weight']}кг{arrow}\n"
 
-    await update.message.reply_text(text, parse_mode="Markdown", reply_markup=main_kb())
+    await update.message.reply_text(text, reply_markup=main_kb())
 
 async def show_history(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     db: Database = ctx.bot_data["db"]
@@ -479,7 +479,7 @@ async def show_history(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             note = f" _{e['note']}_" if e.get('note') else ""
             text += f"  · {e['exercise']}: {e['sets']}×{e['reps']} @ {e['weight']}кг{note}\n"
 
-    await update.message.reply_text(text, parse_mode="Markdown", reply_markup=main_kb())
+    await update.message.reply_text(text, reply_markup=main_kb())
 
 async def finish_workout(update, ctx, db, user_id):
     workouts = db.get_workouts(user_id, 20)
@@ -502,7 +502,7 @@ async def finish_workout(update, ctx, db, user_id):
 
         await update.message.reply_text(
             f"✅ *Тренировка сохранена!*\n\n{clean_reply}",
-            parse_mode="Markdown", reply_markup=main_kb()
+            reply_markup=main_kb()
         )
     else:
         await update.message.reply_text("Тренировка завершена!", reply_markup=main_kb())
