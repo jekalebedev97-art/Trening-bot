@@ -8,8 +8,7 @@ from telegram.ext import (
     Application, CommandHandler, MessageHandler,
     filters, ContextTypes, ConversationHandler
 )
-from google import genai
-from google.genai import types
+from groq import Groq
 from database import Database
 
 logging.basicConfig(level=logging.INFO)
@@ -57,7 +56,7 @@ def save_profile(content: str):
         f.write(content)
 
 def get_client():
-    return genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+    return Groq(api_key=os.environ["GROQ_API_KEY"])
 
 def build_system(profile: str, extra_context: str = "") -> str:
     return f"""Ты персональный тренер и нутрициолог. Общаешься в Telegram.
@@ -171,32 +170,34 @@ def build_workout_context(db, user_id):
         ctx += "\n"
     return ctx
 
-async def call_gemini(system: str, user_text: str, history=None,
-                      image_data=None, image_mime=None) -> str:
+def call_groq(system: str, user_text: str, history=None) -> str:
     client = get_client()
-    full_prompt = f"{system}\n\n---\n\n{user_text}"
-
-    contents = []
+    messages = [{"role": "system", "content": system}]
     if history:
         for h in history[-10:]:
-            role = "user" if h["role"] == "user" else "model"
-            contents.append(types.Content(role=role, parts=[types.Part(text=h["content"])]))
+            messages.append({"role": h["role"], "content": h["content"]})
+    messages.append({"role": "user", "content": user_text})
 
-    if image_data and image_mime:
-        image_bytes = base64.b64decode(image_data)
-        contents.append(types.Content(role="user", parts=[
-            types.Part(inline_data=types.Blob(mime_type=image_mime, data=image_bytes)),
-            types.Part(text=full_prompt)
-        ]))
-    else:
-        contents.append(types.Content(role="user", parts=[types.Part(text=full_prompt)]))
-
-    resp = client.models.generate_content(
-        model="gemini-2.0-flash",
-        contents=contents,
-        config=types.GenerateContentConfig(max_output_tokens=1500, temperature=0.7)
+    resp = client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=messages,
+        max_tokens=1500,
+        temperature=0.7
     )
-    return resp.text
+    return resp.choices[0].message.content
+
+def call_groq_fast(system: str, user_text: str) -> str:
+    client = get_client()
+    resp = client.chat.completions.create(
+        model="llama-3.1-8b-instant",
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": user_text}
+        ],
+        max_tokens=500,
+        temperature=0.3
+    )
+    return resp.choices[0].message.content
 
 def extract_and_apply_profile_update(reply: str) -> tuple[str, bool]:
     pattern = r'<UPDATE_PROFILE>(.*?)</UPDATE_PROFILE>'
@@ -225,7 +226,7 @@ def extract_and_apply_profile_update(reply: str) -> tuple[str, bool]:
 
     return clean_reply, False
 
-async def maybe_update_profile(message: str) -> bool:
+def maybe_update_profile(message: str) -> bool:
     keywords = ['анализ', 'кровь', 'гормон', 'витамин', 'бжу', 'белок', 'жир',
                 'углевод', 'калори', 'травм', 'болит', 'боль', 'цель', 'хочу достичь',
                 'вешу', 'рост', 'возраст', 'лет', 'сплю', 'тестостерон', 'инсулин',
@@ -235,14 +236,8 @@ async def maybe_update_profile(message: str) -> bool:
         return False
 
     profile = load_profile()
-    client = get_client()
     prompt = PROMPT_MEMORY.format(message=message, profile=profile)
-    resp = client.models.generate_content(
-        model="gemini-2.0-flash",
-        contents=prompt,
-        config=types.GenerateContentConfig(max_output_tokens=500, temperature=0.3)
-    )
-    result = resp.text.strip()
+    result = call_groq_fast("Ты помощник который извлекает важную информацию.", prompt)
 
     if "NO_UPDATE" in result or "<UPDATE_PROFILE>" not in result:
         return False
@@ -259,10 +254,9 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         f"Привет, {u.first_name}! 💪\n\n"
-        "Я твой персональный тренер на базе Gemini. Запоминаю всё — "
+        "Я твой персональный тренер. Запоминаю всё — "
         "тренировки, анализы, БЖУ, ощущения, цели.\n\n"
-        "Можешь сразу написать о себе или скинуть анализы — внесу в профиль.\n"
-        "Или начинай тренировку прямо сейчас.",
+        "Можешь сразу написать о себе или начинай тренировку.",
         parse_mode="Markdown",
         reply_markup=main_kb()
     )
@@ -271,7 +265,6 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def handle_main(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text = update.message.text or ""
     db: Database = ctx.bot_data["db"]
-    user_id = update.effective_user.id
 
     if text == "🏋️ Начать тренировку":
         ctx.user_data["workout"] = {"date": today(), "current": None, "chat_history": []}
@@ -310,34 +303,32 @@ async def handle_workout(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if text == "➡️ Следующее упражнение":
         workout["current"] = None
         await update.message.reply_text(
-            "Следующее упражнение — скинь фото или напиши название:",
+            "Следующее упражнение — напиши название:",
             reply_markup=workout_kb()
         )
         return WORKOUT_ACTIVE
 
     current = workout.get("current")
-    image_data, image_mime = None, None
 
+    # Фото — Groq не поддерживает изображения, просим написать название
     if update.message.photo:
-        photo = update.message.photo[-1]
-        file = await ctx.bot.get_file(photo.file_id)
-        file_bytes = await file.download_as_bytearray()
-        image_data = base64.standard_b64encode(bytes(file_bytes)).decode()
-        image_mime = "image/jpeg"
-        text = update.message.caption or "Это упражнение. Дай план."
+        await update.message.reply_text(
+            "Groq не поддерживает фото. Напиши название упражнения текстом.",
+            reply_markup=workout_kb()
+        )
+        return WORKOUT_ACTIVE
 
-    if not current or image_data:
+    if not current:
         await update.message.chat.send_action("typing")
         profile = load_profile()
         wo_ctx = build_workout_context(db, user_id)
         system = build_system(profile, wo_ctx)
         prompt = PROMPT_START_EXERCISE.format(workout_history=wo_ctx, user_message=text)
-        reply = await call_gemini(system, prompt, image_data=image_data, image_mime=image_mime)
+        reply = call_groq(system, prompt)
         clean_reply, _ = extract_and_apply_profile_update(reply)
 
-        ex_name = text[:60] if not image_data else (update.message.caption or "Упражнение")
         workout["current"] = {
-            "name": ex_name,
+            "name": text[:60],
             "original_plan": clean_reply,
             "sets_done": [],
             "sets_remaining": 3,
@@ -347,18 +338,12 @@ async def handle_workout(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return WORKOUT_ACTIVE
 
     set_match = re.search(r'(\d+[\.,]?\d*)\s*[xXхХ×]\s*(\d+)', text)
-    if set_match or current:
+    if set_match:
         await update.message.chat.send_action("typing")
-
-        if set_match:
-            weight = set_match.group(1).replace(",", ".")
-            reps = set_match.group(2)
-            set_result = f"{weight}кг × {reps} повт"
-            comment = re.sub(r'(\d+[\.,]?\d*)\s*[xXхХ×]\s*(\d+)', '', text).strip(" -—")
-        else:
-            set_result = "комментарий"
-            comment = text
-            weight, reps = "?", "?"
+        weight = set_match.group(1).replace(",", ".")
+        reps = set_match.group(2)
+        set_result = f"{weight}кг × {reps} повт"
+        comment = re.sub(r'(\d+[\.,]?\d*)\s*[xXхХ×]\s*(\d+)', '', text).strip(" -—")
 
         current["sets_done"].append(f"{set_result}" + (f" — {comment}" if comment else ""))
         current["sets_remaining"] = max(0, current["sets_remaining"] - 1)
@@ -369,7 +354,7 @@ async def handle_workout(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             pass
 
         if comment:
-            await maybe_update_profile(comment)
+            maybe_update_profile(comment)
 
         profile = load_profile()
         system = build_system(profile)
@@ -381,7 +366,7 @@ async def handle_workout(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             user_comment=comment or "не указан",
             sets_remaining=current["sets_remaining"]
         )
-        reply = await call_gemini(system, prompt)
+        reply = call_groq(system, prompt)
         clean_reply, _ = extract_and_apply_profile_update(reply)
 
         workout["chat_history"] += [
@@ -391,12 +376,13 @@ async def handle_workout(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(clean_reply, parse_mode="Markdown", reply_markup=workout_kb())
         return WORKOUT_ACTIVE
 
+    # Свободный текст во время тренировки
     await update.message.chat.send_action("typing")
-    await maybe_update_profile(text)
+    maybe_update_profile(text)
     profile = load_profile()
     system = build_system(profile, build_workout_context(db, user_id))
     history = workout.get("chat_history", [])[-10:]
-    reply = await call_gemini(system, text, history=history)
+    reply = call_groq(system, text, history=history)
     clean_reply, updated = extract_and_apply_profile_update(reply)
     workout["chat_history"] += [
         {"role": "user", "content": text},
@@ -416,14 +402,14 @@ async def handle_chat(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return MAIN_MENU
 
     await update.message.chat.send_action("typing")
-    await maybe_update_profile(text)
+    maybe_update_profile(text)
 
     profile = load_profile()
     wo_ctx = build_workout_context(db, user_id)
     system = build_system(profile, wo_ctx)
     history = ctx.user_data.get("chat_history", [])[-16:]
 
-    reply = await call_gemini(system, text, history=history)
+    reply = call_groq(system, text, history=history)
     clean_reply, updated = extract_and_apply_profile_update(reply)
 
     ctx.user_data.setdefault("chat_history", [])
@@ -511,7 +497,7 @@ async def finish_workout(update, ctx, db, user_id):
         await update.message.chat.send_action("typing")
         profile = load_profile()
         system = build_system(profile)
-        reply = await call_gemini(system, summary)
+        reply = call_groq(system, summary)
         clean_reply, _ = extract_and_apply_profile_update(reply)
 
         await update.message.reply_text(
