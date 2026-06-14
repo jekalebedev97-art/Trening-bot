@@ -513,7 +513,7 @@ async def finish_workout(update, ctx, db, user_id):
 
 def main():
     token = os.environ["TELEGRAM_TOKEN"]
-    db = Database("/app/data/fitness.db")
+    db = Database()
 
     app = Application.builder().token(token).build()
     app.bot_data["db"] = db
